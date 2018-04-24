@@ -43,7 +43,9 @@ import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.annotation.RestrictTo;
 import android.support.annotation.RestrictTo.Scope;
+import android.support.v4.view.AccessibilityDelegateCompat;
 import android.support.v4.view.ViewCompat;
+import android.support.v4.view.accessibility.AccessibilityNodeInfoCompat;
 import android.text.TextUtils;
 import android.view.Menu;
 import android.view.View;
@@ -59,9 +61,12 @@ import com.taobao.weex.IWXActivityStateListener;
 import com.taobao.weex.WXEnvironment;
 import com.taobao.weex.WXSDKInstance;
 import com.taobao.weex.WXSDKManager;
+import com.taobao.weex.adapter.IWXAccessibilityRoleAdapter;
+import com.taobao.weex.bridge.EventResult;
 import com.taobao.weex.bridge.Invoker;
 import com.taobao.weex.common.Constants;
 import com.taobao.weex.common.IWXObject;
+import com.taobao.weex.common.WXPerformance;
 import com.taobao.weex.common.WXRuntimeException;
 import com.taobao.weex.dom.ImmutableDomObject;
 import com.taobao.weex.dom.WXDomHandler;
@@ -75,6 +80,7 @@ import com.taobao.weex.tracing.Stopwatch;
 import com.taobao.weex.tracing.WXTracing;
 import com.taobao.weex.ui.IFComponentHolder;
 import com.taobao.weex.ui.animation.WXAnimationModule;
+import com.taobao.weex.ui.component.binding.Statements;
 import com.taobao.weex.ui.component.pesudo.OnActivePseudoListener;
 import com.taobao.weex.ui.component.pesudo.PesudoStatus;
 import com.taobao.weex.ui.component.pesudo.TouchActivePseudoListener;
@@ -106,6 +112,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * abstract component
@@ -118,7 +126,7 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
   public static final String PROP_FS_WRAP_CONTENT = "w";
 
   private int mFixedProp = 0;
-  public static int mComponentNum = 0;
+  public static volatile int mComponentNum = 0;
   /** package **/ T mHost;
 
   private volatile WXVContainer mParent;
@@ -137,7 +145,7 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
   private int mPreRealLeft = 0;
   private int mPreRealTop = 0;
   private int mStickyOffset = 0;
-  private WXGesture mGesture;
+  protected WXGesture mGesture;
   private IFComponentHolder mHolder;
   private boolean isUsing = false;
   private List<OnClickListener> mHostClickListeners;
@@ -152,12 +160,14 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
   private boolean mNeedLayoutOnAnimation = false;
   private String mLastBoxShadowId;
 
+
   public WXTracing.TraceInfo mTraceInfo = new WXTracing.TraceInfo();
 
   public static final int TYPE_COMMON = 0;
   public static final int TYPE_VIRTUAL = 1;
 
   private boolean waste = false;
+
 
   //Holding the animation bean when component is uninitialized
   public void postAnimation(WXAnimationModule.AnimationHolder holder) {
@@ -237,7 +247,7 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
     void onHostViewClick();
   }
 
-  interface OnFocusChangeListener{
+  public interface OnFocusChangeListener{
     void onFocusChange(boolean hasFocus);
   }
 
@@ -307,16 +317,52 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
   }
 
   public final void fireEvent(String type, Map<String, Object> params){
-    fireEvent(type,params,null);
+    if(WXUtils.getBoolean(getDomObject().getAttrs().get("fireEventSyn"), false)){
+        fireEventWait(type, params);
+    }else{
+        fireEvent(type, params,null, null);
+    }
+  }
+
+  public final EventResult fireEventWait(String type, Map<String, Object> params){
+    final CountDownLatch waitLatch = new CountDownLatch(1);
+    EventResult callback = new EventResult(){
+      @Override
+      public void onCallback(Object result) {
+        super.onCallback(result);
+        waitLatch.countDown();
+      }
+    };
+    try{
+      fireEvent(type, params, null, callback);
+      waitLatch.await(10, TimeUnit.MILLISECONDS);
+      return  callback;
+    }catch (Exception e){
+      if(WXEnvironment.isApkDebugable()){
+        WXLogUtils.e("fireEventWait", e);
+      }
+      return  callback;
+    }
   }
 
   protected final void fireEvent(String type, Map<String, Object> params,Map<String, Object> domChanges){
+      fireEvent(type, params, domChanges, null);
+  }
+
+
+    private final void fireEvent(String type, Map<String, Object> params,Map<String, Object> domChanges, EventResult callback){
     if(mInstance != null && mDomObj != null) {
         List<Object> eventArgsValues = null;
         if(mDomObj.getEvents() != null && mDomObj.getEvents().getEventBindingArgsValues() != null){
              eventArgsValues = mDomObj.getEvents().getEventBindingArgsValues().get(type);
         }
-        mInstance.fireEvent(mCurrentRef, type, params,domChanges, eventArgsValues);
+        if(params != null){
+          String componentId = Statements.getComponentId(this);
+          if(componentId != null) {
+            params.put("componentId", componentId);
+          }
+        }
+        mInstance.fireEvent(mCurrentRef, type, params,domChanges, eventArgsValues, callback);
     }
   }
 
@@ -339,6 +385,9 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
    * @return true for lazy
    */
   public boolean isLazy() {
+    if(mLazy){
+      return true;
+    }
     return mParent != null && mParent.isLazy();
   }
 
@@ -487,6 +536,10 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
       return;
     }
 
+    if (realHeight >= WXPerformance.VIEW_LIMIT_HEIGHT && realWidth>=WXPerformance.VIEW_LIMIT_WIDTH){
+      mInstance.getWXPerformance().cellExceedNum++;
+    }
+
     mAbsoluteY = (int) (nullParent?0:mParent.getAbsoluteY() + mDomObj.getLayoutY());
     mAbsoluteX = (int) (nullParent?0:mParent.getAbsoluteX() + mDomObj.getLayoutX());
 
@@ -505,10 +558,14 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
 
   private void setComponentLayoutParams(int realWidth, int realHeight, int realLeft, int realTop,
       int realRight, int realBottom, Point rawOffset) {
+    if(getInstance() == null || getInstance().isDestroy()){
+      return;
+    }
+
     FlatGUIContext UIImp = getInstance().getFlatUIContext();
     WidgetContainer ancestor;
     Widget widget;
-    if ((ancestor = UIImp.getFlatComponentAncestor(this)) != null) {
+    if (UIImp != null && (ancestor = UIImp.getFlatComponentAncestor(this)) != null) {
       if (this instanceof FlatComponent && !((FlatComponent) this).promoteToView(true)) {
         widget = ((FlatComponent) this).getOrCreateFlatWidget();
       } else {
@@ -859,6 +916,9 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
           t.printStackTrace();
         }
         return true;
+      case Constants.Name.ROLE:
+        setRole(WXUtils.getString(param, ""));
+        return true;
       default:
         return false;
     }
@@ -889,8 +949,8 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
       float quality = WXUtils.getFloat(shadowQuality, 0.5f);
       int viewPort = getInstance().getInstanceViewPortWidth();
       String token = new StringBuilder(boxShadow.toString()).append(" / [")
-          .append(getDomObject().getStyles().getWidth(viewPort)).append(",")
-          .append(getDomObject().getStyles().getHeight(viewPort)).append("] / ")
+          .append(target.getMeasuredWidth()).append(",")
+          .append(target.getMeasuredHeight()).append("] / ")
           .append(quality).toString();
 
       if (mLastBoxShadowId != null && mLastBoxShadowId.equals(token)) {
@@ -941,7 +1001,6 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
     if (getDomObject() != null && getDomObject().getStyles() != null) {
       Object obj = getDomObject().getStyles().get(Constants.Name.BOX_SHADOW);
       if (obj == null) {
-        WXLogUtils.d("BoxShadow", "no box-shadow");
         return;
       }
     }
@@ -957,6 +1016,7 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
         overlay.clear();
       }
     }
+    mLastBoxShadowId = null;
   }
 
   @TargetApi(Build.VERSION_CODES.JELLY_BEAN)
@@ -971,6 +1031,26 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
     View host = getHostView();
     if(host != null){
       host.setContentDescription(label);
+    }
+  }
+
+  protected void setRole(String roleKey) {
+    View host = getHostView();
+    String role = roleKey;
+    if (host != null && !TextUtils.isEmpty(roleKey)) {
+      IWXAccessibilityRoleAdapter roleAdapter = WXSDKManager.getInstance().getAccessibilityRoleAdapter();
+      if (roleAdapter != null) {
+        role = roleAdapter.getRole(roleKey);
+      }
+      final String finalRole = role;
+      AccessibilityDelegateCompat delegate = new AccessibilityDelegateCompat() {
+        @Override
+        public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfoCompat info) {
+          super.onInitializeAccessibilityNodeInfo(host, info);
+          info.setRoleDescription(finalRole);
+        }
+      };
+      ViewCompat.setAccessibilityDelegate(host, delegate);
     }
   }
 
@@ -1089,6 +1169,9 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
           return true;
         }
       }
+    }
+    if(Constants.Event.STOP_PROPAGATION.equals(type)){
+      return  true;
     }
     return false;
   }
@@ -1580,10 +1663,12 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
   /********************************
    *  end hook Activity life cycle callback
    ********************************************************/
+  @CallSuper
   public void recycled() {
     if(mDomObj.isFixed())
       return;
 
+    clearBoxShadow();
   }
 
   public void destroy() {
@@ -1656,7 +1741,7 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
     return mGestureType != null && mGestureType.contains(WXGestureType.toString());
   }
 
-  protected boolean containsEvent(String event){
+  public boolean containsEvent(String event){
     return mDomObj.getEvents().contains(event) || mAppendEvents.contains(event);
   }
 
@@ -1914,44 +1999,6 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
     }
   }
 
-  public boolean isWaste() {
-    return waste;
-  }
-
-  public void setWaste(boolean waste) {
-    if(this.waste != waste){
-      this.waste = waste;
-      WXDomObject domObject = (WXDomObject) getDomObject();
-      if(waste){
-          getDomObject().getStyles().put(Constants.Name.VISIBILITY, Constants.Value.HIDDEN);
-          if(domObject.getAttrs().getStatement() == null) {
-            domObject.setVisible(false);
-            if (getHostView() != null) {
-                getHostView().setVisibility(View.GONE);
-            }
-            return;
-          }
-          if(Constants.Value.VISIBLE.equals(domObject.getAttrs().get(Constants.Name.VIF_FALSE))){
-            domObject.setVisible(true);
-            if(getHostView() != null){
-               getHostView().setVisibility(View.VISIBLE);
-             }
-          }else{
-            domObject.setVisible(false);
-            if(getHostView() != null){
-              getHostView().setVisibility(View.GONE);
-            }
-          }
-      }else{
-        domObject.setVisible(true);
-        if(getHostView() != null){
-           getHostView().setVisibility(View.VISIBLE);
-        }
-        getDomObject().getStyles().put(Constants.Name.VISIBILITY, Constants.Value.VISIBLE);
-      }
-    }
-  }
-
   protected boolean isRippleEnabled() {
     try {
       Object obj = getDomObject().getAttrs().get(Constants.Name.RIPPLE_ENABLED);
@@ -1960,5 +2007,77 @@ public abstract class  WXComponent<T extends View> implements IWXObject, IWXActi
       //ignore
     }
     return false;
+  }
+
+
+
+  public boolean isWaste() {
+    return waste;
+  }
+
+  /**
+   * mark node waste,
+   * if node is waster should hidden, and dom tree should allow not show
+   * */
+  public void setWaste(boolean waste) {
+    if(this.waste != waste){
+      this.waste = waste;
+      WXDomObject domObject = (WXDomObject) getDomObject();
+      if(waste){
+          //update dom not show, and put style to hidden
+         domObject.setVisible(false);
+         domObject.getStyles().put(Constants.Name.VISIBILITY, Constants.Value.HIDDEN);
+         //if component not init, mark lazy init when use, reduce view count
+         if(getHostView() == null){
+           if(!mLazy){
+              lazy(true);
+           }
+         }else{
+           getHostView().setVisibility(View.GONE);
+         }
+      }else{
+         domObject.setVisible(true);
+         domObject.getStyles().put(Constants.Name.VISIBILITY, Constants.Value.VISIBLE);
+         if(getHostView() == null){
+             if(mLazy) { // when parent is lazy just mark node lazy false
+               if(mParent != null && mParent.isLazy()){
+                  lazy(false);
+               }else{
+                  ComponentUtils.initLazyComponent(this, mParent);
+               }
+             }
+         }else{
+           getHostView().setVisibility(View.VISIBLE);
+         }
+      }
+    }
+  }
+
+
+  /** component key id in native,
+   *  differ with ref, ref + position
+   *  */
+  public  String getViewTreeKey(){
+     if(mViewTreeKey == null){
+        if(getParent() == null){
+          mViewTreeKey = getRef();
+        }else{
+          mViewTreeKey = getRef() + "_" + getParent().indexOf(this);
+        }
+     }
+     return mViewTreeKey;
+  }
+
+  private String mViewTreeKey;
+
+
+  /**
+   * node is lazy
+   * */
+  private boolean mLazy = false;
+
+  /***/
+  public void lazy(boolean lazy) {
+    mLazy = lazy;
   }
 }

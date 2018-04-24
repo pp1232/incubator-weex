@@ -21,6 +21,7 @@ package com.taobao.weex;
 import android.app.Application;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Looper;
 import android.support.v4.content.LocalBroadcastManager;
 import android.text.TextUtils;
 
@@ -42,9 +43,11 @@ import com.taobao.weex.bridge.WXModuleManager;
 import com.taobao.weex.bridge.WXServiceManager;
 import com.taobao.weex.common.Destroyable;
 import com.taobao.weex.common.TypeModuleFactory;
+import com.taobao.weex.common.WXErrorCode;
 import com.taobao.weex.common.WXException;
 import com.taobao.weex.common.WXInstanceWrap;
 import com.taobao.weex.common.WXModule;
+import com.taobao.weex.common.WXPerformance;
 import com.taobao.weex.dom.BasicEditTextDomObject;
 import com.taobao.weex.dom.TextAreaEditTextDomObject;
 import com.taobao.weex.dom.WXCellDomObject;
@@ -88,12 +91,14 @@ import com.taobao.weex.ui.component.list.SimpleListComponent;
 import com.taobao.weex.ui.component.list.WXCell;
 import com.taobao.weex.ui.component.list.WXListComponent;
 import com.taobao.weex.ui.component.list.template.WXRecyclerTemplateList;
-import com.taobao.weex.ui.module.WXLocalModule;
+import com.taobao.weex.ui.config.AutoScanConfigRegister;
+import com.taobao.weex.ui.module.WXLocaleModule;
 import com.taobao.weex.ui.module.WXMetaModule;
 import com.taobao.weex.ui.module.WXModalUIModule;
 import com.taobao.weex.ui.module.WXTimerModule;
 import com.taobao.weex.ui.module.WXWebViewModule;
 import com.taobao.weex.utils.LogLevel;
+import com.taobao.weex.utils.WXExceptionUtils;
 import com.taobao.weex.utils.WXLogUtils;
 import com.taobao.weex.utils.WXSoInstallMgrSdk;
 import com.taobao.weex.utils.batch.BatchOperationHelper;
@@ -170,6 +175,8 @@ public class WXSDKEngine {
       doInitInternal(application,config);
       WXEnvironment.sSDKInitInvokeTime = System.currentTimeMillis()-start;
       WXLogUtils.renderPerformanceLog("SDKInitInvokeTime", WXEnvironment.sSDKInitInvokeTime);
+      WXPerformance.init();
+
       mIsInit = true;
     }
   }
@@ -178,6 +185,11 @@ public class WXSDKEngine {
     WXEnvironment.sApplication = application;
 	if(application == null){
 	  WXLogUtils.e(TAG, " doInitInternal application is null");
+	  WXExceptionUtils.commitCriticalExceptionRT(null,
+			  WXErrorCode.WX_KEY_EXCEPTION_SDK_INIT,
+			  "doInitInternal",
+			  WXErrorCode.WX_KEY_EXCEPTION_SDK_INIT.getErrorMsg() + "WXEnvironment sApplication is null",
+			  null);
 	}
     WXEnvironment.JsFrameworkInit = false;
 
@@ -195,6 +207,12 @@ public class WXSDKEngine {
                               sm.getWXStatisticsListener());
         boolean isSoInitSuccess = WXSoInstallMgrSdk.initSo(V8_SO_NAME, 1, config!=null?config.getUtAdapter():null);
         if (!isSoInitSuccess) {
+		  WXExceptionUtils.commitCriticalExceptionRT(null,
+				  WXErrorCode.WX_KEY_EXCEPTION_SDK_INIT,
+				  "doInitInternal",
+				  WXErrorCode.WX_KEY_EXCEPTION_SDK_INIT.getErrorMsg() + "isSoInit false",
+				  null);
+
           return;
         }
         sm.initScriptsFramework(config!=null?config.getFramework():null);
@@ -299,7 +317,7 @@ public class WXSDKEngine {
 
       registerModule("modal", WXModalUIModule.class, false);
       registerModule("instanceWrap", WXInstanceWrap.class, true);
-      registerModule("animation", WXAnimationModule.class, true);
+      registerModule("animation", WXAnimationModule.class, false);
       registerModule("webview", WXWebViewModule.class, true);
       registerModule("navigator", WXNavigatorModule.class);
       registerModule("stream", WXStreamModule.class);
@@ -310,7 +328,7 @@ public class WXSDKEngine {
       registerModule("picker", WXPickersModule.class);
       registerModule("meta", WXMetaModule.class,true);
       registerModule("webSocket", WebSocketModule.class);
-      registerModule("local", WXLocalModule.class);
+      registerModule("locale", WXLocaleModule.class);
 
 
       registerDomObject(simpleList, WXListDomObject.class);
@@ -332,8 +350,10 @@ public class WXSDKEngine {
     } catch (WXException e) {
       WXLogUtils.e("[WXSDKEngine] register:", e);
     }
+    AutoScanConfigRegister.doScanConfig();
     batchHelper.flush();
   }
+
 
   /**
    *
@@ -372,14 +392,19 @@ public class WXSDKEngine {
 
   public static boolean registerComponent(IFComponentHolder holder, boolean appendTree, String ... names) throws WXException {
     boolean result =  true;
-    for(String name:names) {
-      Map<String, Object> componentInfo = new HashMap<>();
-      if (appendTree) {
-        componentInfo.put("append", "tree");
+    try {
+      for (String name : names) {
+        Map<String, Object> componentInfo = new HashMap<>();
+        if (appendTree) {
+          componentInfo.put("append", "tree");
+        }
+        result = result && WXComponentRegistry.registerComponent(name, holder, componentInfo);
       }
-      result  = result && WXComponentRegistry.registerComponent(name, holder, componentInfo);
+      return result;
+    } catch (Throwable e) {
+      e.printStackTrace();
+      return result;
     }
-    return result;
   }
 
   /**
@@ -413,7 +438,7 @@ public class WXSDKEngine {
     return registerModule(moduleName, factory.getExternalModuleClass(moduleName,WXEnvironment.getApplication()),global);
   }
 
-  private static <T extends WXModule> boolean registerModule(String moduleName, ModuleFactory factory, boolean global) throws WXException {
+  public static <T extends WXModule> boolean registerModule(String moduleName, ModuleFactory factory, boolean global) throws WXException {
     return WXModuleManager.registerModule(moduleName, factory,global);
   }
 
@@ -421,7 +446,7 @@ public class WXSDKEngine {
     return registerModule(moduleName, moduleClass,false);
   }
 
-  public static boolean registerService(String name, String serviceScript, Map<String, String> options) {
+  public static boolean registerService(String name, String serviceScript, Map<String, Object> options) {
     return WXServiceManager.registerService(name, serviceScript, options);
   }
 
@@ -510,6 +535,7 @@ public class WXSDKEngine {
     WXBridgeManager.getInstance().restart();
     WXBridgeManager.getInstance().initScriptsFramework(framework);
 
+    WXServiceManager.reload();
     WXModuleManager.reload();
     WXComponentRegistry.reload();
     WXSDKManager.getInstance().postOnUiThread(new Runnable() {

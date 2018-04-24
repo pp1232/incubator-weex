@@ -24,6 +24,7 @@ import android.graphics.Point;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
+import android.os.Looper;
 import android.support.annotation.NonNull;
 import android.text.TextUtils;
 import android.view.View;
@@ -107,7 +108,7 @@ public class WXScroller extends WXVContainer<ViewGroup> implements WXScrollViewL
   private int mContentHeight = 0;
 
   private WXStickyHelper stickyHelper;
-  private Handler handler=new Handler();
+  private Handler handler=new Handler(Looper.getMainLooper());
 
   private boolean isScrollable = true;
 
@@ -411,6 +412,7 @@ public class WXScroller extends WXVContainer<ViewGroup> implements WXScrollViewL
         LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT);
       innerView.addView(mRealView, layoutParams);
       innerView.setVerticalScrollBarEnabled(true);
+      innerView.setNestedScrollingEnabled(WXUtils.getBoolean(getDomObject().getAttrs().get(Constants.Name.NEST_SCROLLING_ENABLED), true));
       innerView.addScrollViewListener(new WXScrollViewListener() {
         @Override
         public void onScrollChanged(WXScrollView scrollView, int x, int y, int oldx, int oldy) {
@@ -640,7 +642,7 @@ public class WXScroller extends WXVContainer<ViewGroup> implements WXScrollViewL
       return;
     }
 
-    getInnerView().postDelayed(new Runnable() {
+    getInnerView().postDelayed(WXThread.secure(new Runnable() {
       @Override
       public void run() {
         if (mOrientation == Constants.Orientation.VERTICAL) {
@@ -658,7 +660,7 @@ public class WXScroller extends WXVContainer<ViewGroup> implements WXScrollViewL
         }
         getInnerView().invalidate();
       }
-    }, 16);
+    }), 16);
   }
 
   @Override

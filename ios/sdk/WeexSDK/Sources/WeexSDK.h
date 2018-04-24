@@ -39,6 +39,7 @@
 #import "WXResourceRequestHandler.h"
 #import "WXResourceRequest.h"
 #import "WXResourceLoader.h"
+#import "WXRecyclerComponent.h"
 #import "WXPrerenderManager.h"
 #import "WXNetworkProtocol.h"
 #import "WXNavigationProtocol.h"
@@ -70,5 +71,6 @@
 #import "WXAComponent.h"
 #import "NSObject+WXSwizzle.h"
 #import "Layout.h"
+#import "JSContext+Weex.h"
 
 #endif /* __OBJC__ */

@@ -41,6 +41,7 @@ import android.view.animation.LinearInterpolator;
 import com.alibaba.fastjson.JSONObject;
 import com.taobao.weex.WXSDKInstance;
 import com.taobao.weex.WXSDKManager;
+import com.taobao.weex.common.WXErrorCode;
 import com.taobao.weex.dom.DOMAction;
 import com.taobao.weex.dom.DOMActionContext;
 import com.taobao.weex.dom.RenderAction;
@@ -54,6 +55,7 @@ import com.taobao.weex.ui.animation.WidthProperty;
 import com.taobao.weex.ui.component.WXComponent;
 import com.taobao.weex.ui.view.border.BorderDrawable;
 import com.taobao.weex.utils.SingleFunctionParser;
+import com.taobao.weex.utils.WXExceptionUtils;
 import com.taobao.weex.utils.WXLogUtils;
 import com.taobao.weex.utils.WXResourceUtils;
 import com.taobao.weex.utils.WXUtils;
@@ -77,7 +79,7 @@ class AnimationAction implements DOMAction, RenderAction {
 
   @Nullable
   private
-  final String animation;
+  final JSONObject animation;
 
   @Nullable
   private
@@ -87,7 +89,7 @@ class AnimationAction implements DOMAction, RenderAction {
   private
   WXAnimationBean mAnimationBean;
 
-  AnimationAction(@NonNull final String ref, @Nullable String animation,
+  AnimationAction(@NonNull final String ref, @Nullable JSONObject animation,
                   @Nullable final String callBack) {
     this.ref = ref;
     this.animation = animation;
@@ -111,9 +113,9 @@ class AnimationAction implements DOMAction, RenderAction {
     try {
       WXDomObject domObject;
       if (!context.isDestory() &&
-          !TextUtils.isEmpty(animation) &&
+          animation != null &&
           (domObject = context.getDomByRef(ref)) != null) {
-        WXAnimationBean animationBean = JSONObject.parseObject(animation, WXAnimationBean.class);
+        WXAnimationBean animationBean =  JSONObject.toJavaObject(animation, WXAnimationBean.class);
         if (animationBean != null && animationBean.styles != null) {
           int width = (int) domObject.getLayoutWidth();
           int height = (int) domObject.getLayoutHeight();
@@ -125,6 +127,10 @@ class AnimationAction implements DOMAction, RenderAction {
         }
       }
     } catch (RuntimeException e) {
+	  WXExceptionUtils.commitCriticalExceptionRT(context.getInstance().getInstanceId(),
+			  WXErrorCode.WX_KEY_EXCEPTION_DOM_ANIMATION,
+			  "animationAction",
+			  WXErrorCode.WX_KEY_EXCEPTION_DOM_ANIMATION.getErrorMsg() + WXLogUtils.getStackTrace(e),null);
       WXLogUtils.e(TAG, WXLogUtils.getStackTrace(e));
     }
   }
@@ -167,8 +173,11 @@ class AnimationAction implements DOMAction, RenderAction {
             animator.start();
           }
         } catch (RuntimeException e) {
-          WXLogUtils.e(TAG, WXLogUtils.getStackTrace(e));
-        }
+		  WXExceptionUtils.commitCriticalExceptionRT(instance.getInstanceId(),
+				  WXErrorCode.WX_KEY_EXCEPTION_DOM_ANIMATION,
+				  "animationAction",
+				  WXErrorCode.WX_KEY_EXCEPTION_DOM_ANIMATION.getErrorMsg() + WXLogUtils.getStackTrace(e),null);
+		  WXLogUtils.e(TAG, WXLogUtils.getStackTrace(e));        }
       }
     }
   }

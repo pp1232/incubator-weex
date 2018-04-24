@@ -97,8 +97,11 @@
         _accessibilityHintContent = nil;
         
         _async = NO;
-        _transition = [[WXTransition alloc]initWithStyles:styles];
         
+        if (styles[kWXTransitionProperty]) {
+            _transition = [[WXTransition alloc]initWithStyles:styles];
+        }
+
         //TODO set indicator style 
         if ([type isEqualToString:@"indicator"]) {
             _styles[@"position"] = @"absolute";
@@ -153,7 +156,7 @@
         copyId = __copy % (1024*1024);
         __copy++;
     }
-    NSString *copyRef = [NSString stringWithFormat:@"%zdcopy_of%@", copyId, _isTemplate ? self.ref : self->_templateComponent.ref];
+    NSString *copyRef = [NSString stringWithFormat:@"%ldcopy_of%@", (long)copyId, _isTemplate ? self.ref : self->_templateComponent.ref];
     WXComponent *component = [[[self class] allocWithZone:zone] initWithRef:copyRef type:self.type styles:self.styles attributes:self.attributes events:self.events weexInstance:self.weexInstance];
     if (_isTemplate) {
         component->_templateComponent = self;
@@ -196,6 +199,9 @@
 
 //    [self _removeAllEvents];
     // remove all gesture and all
+    if (_isTemplate && self.attributes[@"@templateId"]) {
+        [[WXSDKManager bridgeMgr] callComponentHook:_weexInstance.instanceId componentId:self.attributes[@"@templateId"] type:@"lifecycle" hook:@"destroy" args:nil competion:nil];
+    }
     if (_tapGesture) {
         [_tapGesture removeTarget:nil action:NULL];
     }
@@ -285,6 +291,7 @@
                 [self.supercomponent.view addSubview:self.view];
             });
         }
+        [self setNeedsLayout];
     }
 }
 
@@ -566,39 +573,34 @@
 #pragma mark Updating
 - (void)_updateStylesOnComponentThread:(NSDictionary *)styles resetStyles:(NSMutableArray *)resetStyles isUpdateStyles:(BOOL)isUpdateStyles
 {
-    if ([self _isPropertyTransitionStyles:styles]) {
-        [_transition _handleTransitionWithStyles:styles withTarget:self];
+    BOOL isTransitionTag = _transition ? [self _isTransitionTag:styles] : NO;
+    if (isTransitionTag) {
+        [_transition _handleTransitionWithStyles:styles resetStyles:resetStyles target:self];
     } else {
         styles = [self parseStyles:styles];
         [self _updateCSSNodeStyles:styles];
+        [self _resetCSSNodeStyles:resetStyles];
     }
-    
     if (isUpdateStyles) {
         [self _modifyStyles:styles];
+        if ([self needsLayout]) {
+            // call update style may take effect on layout, maybe the component
+            // displaylink has been paused, so we need to restart the component task, and it will auto-pause when task queue is empty.
+            [self.weexInstance.componentManager startComponentTasks];
+        }
     }
-    [self _resetCSSNodeStyles:resetStyles];
 }
 
-- (BOOL)_isPropertyTransitionStyles:(NSDictionary *)styles
+- (BOOL)_isTransitionTag:(NSDictionary *)styles
 {
     BOOL yesOrNo = false;
     if (_transition.transitionOptions != WXTransitionOptionsNone) {
-        if ((_transition.transitionOptions & WXTransitionOptionsWidth &&styles[@"width"])
-            ||(_transition.transitionOptions & WXTransitionOptionsHeight &&styles[@"height"])
-            ||(_transition.transitionOptions & WXTransitionOptionsRight &&styles[@"right"])
-            ||(_transition.transitionOptions & WXTransitionOptionsLeft &&styles[@"left"])
-            ||(_transition.transitionOptions & WXTransitionOptionsBottom &&styles[@"bottom"])
-            ||(_transition.transitionOptions & WXTransitionOptionsTop &&styles[@"top"])
-            ||(_transition.transitionOptions & WXTransitionOptionsBackgroundColor &&styles[@"backgroundColor"])
-            ||(_transition.transitionOptions & WXTransitionOptionsTransform &&styles[@"transform"])
-            ||(_transition.transitionOptions & WXTransitionOptionsOpacity &&styles[@"opacity"])) {
-            yesOrNo = true;
-        }
+        yesOrNo = true;
     }
     return yesOrNo;
 }
 
-- (BOOL)_isPropertyAnimationStyles:(NSDictionary *)styles
+- (BOOL)_isTransitionOnMainThreadStyles:(NSDictionary *)styles
 {
     BOOL yesOrNo = false;
     if (_transition.transitionOptions != WXTransitionOptionsNone) {
@@ -642,12 +644,11 @@
 - (void)_updateStylesOnMainThread:(NSDictionary *)styles resetStyles:(NSMutableArray *)resetStyles
 {
     WXAssertMainThread();
-    if (![self _isPropertyAnimationStyles:styles]) {
+    if (![self _isTransitionOnMainThreadStyles:styles]) {
         [self _updateViewStyles:styles];
     } else {
         [self _transitionUpdateViewProperty:styles];
     }
-    
     [self _resetStyles:resetStyles];
     [self _handleBorders:styles isUpdating:YES];
     [self updateStyles:styles];

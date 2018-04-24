@@ -23,11 +23,13 @@ import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.text.TextUtils;
 
+import com.taobao.weex.adapter.ClassLoaderAdapter;
 import com.taobao.weex.adapter.DefaultUriAdapter;
 import com.taobao.weex.adapter.DefaultWXHttpAdapter;
 import com.taobao.weex.adapter.ICrashInfoReporter;
 import com.taobao.weex.adapter.IDrawableLoader;
 import com.taobao.weex.adapter.ITracingAdapter;
+import com.taobao.weex.adapter.IWXAccessibilityRoleAdapter;
 import com.taobao.weex.adapter.IWXHttpAdapter;
 import com.taobao.weex.adapter.IWXImgLoaderAdapter;
 import com.taobao.weex.adapter.IWXJSExceptionAdapter;
@@ -47,6 +49,7 @@ import com.taobao.weex.common.WXRuntimeException;
 import com.taobao.weex.common.WXThread;
 import com.taobao.weex.common.WXWorkThreadManager;
 import com.taobao.weex.dom.WXDomManager;
+import com.taobao.weex.performance.IWXAnalyzer;
 import com.taobao.weex.ui.WXRenderManager;
 import com.taobao.weex.utils.WXLogUtils;
 import com.taobao.weex.utils.WXUtils;
@@ -76,6 +79,8 @@ public class WXSDKManager {
   private IDrawableLoader mDrawableLoader;
   private IWXHttpAdapter mIWXHttpAdapter;
   private IActivityNavBarSetter mActivityNavBarSetter;
+  private IWXAccessibilityRoleAdapter mRoleAdapter;
+  private List<IWXAnalyzer> mWXAnalyzerList;
 
   private ICrashInfoReporter mCrashInfo;
 
@@ -84,6 +89,7 @@ public class WXSDKManager {
   private IWXStorageAdapter mIWXStorageAdapter;
   private IWXStatisticsListener mStatisticsListener;
   private URIAdapter mURIAdapter;
+  private ClassLoaderAdapter mClassLoaderAdapter;
   private IWebSocketAdapterFactory mIWebSocketAdapterFactory;
   private ITracingAdapter mTracingAdapter;
   private WXValidateProcessor mWXValidateProcessor;
@@ -103,6 +109,7 @@ public class WXSDKManager {
     mWXDomManager = new WXDomManager(mWXRenderManager);
     mBridgeManager = WXBridgeManager.getInstance();
     mWXWorkThreadManager = new WXWorkThreadManager();
+    mWXAnalyzerList = new ArrayList<>();
   }
 
   /**
@@ -343,8 +350,29 @@ public class WXSDKManager {
     return mURIAdapter;
   }
 
+  public ClassLoaderAdapter getClassLoaderAdapter() {
+    if(mClassLoaderAdapter == null){
+        mClassLoaderAdapter = new ClassLoaderAdapter();
+    }
+    return mClassLoaderAdapter;
+  }
+
   public IWXSoLoaderAdapter getIWXSoLoaderAdapter() {
     return mIWXSoLoaderAdapter;
+  }
+
+  public List<IWXAnalyzer> getWXAnalyzerList(){
+    return mWXAnalyzerList;
+  }
+
+  public void addWXAnalyzer(IWXAnalyzer analyzer){
+    if (!mWXAnalyzerList.contains(analyzer)) {
+      mWXAnalyzerList.add(analyzer);
+    }
+  }
+
+  public void rmWXAnalyzer(IWXAnalyzer analyzer){
+    mWXAnalyzerList.remove(analyzer);
   }
 
   void setInitConfig(InitConfig config){
@@ -357,6 +385,7 @@ public class WXSDKManager {
     this.mIWebSocketAdapterFactory = config.getWebSocketAdapterFactory();
     this.mIWXJSExceptionAdapter = config.getJSExceptionAdapter();
     this.mIWXSoLoaderAdapter = config.getIWXSoLoaderAdapter();
+    this.mClassLoaderAdapter = config.getClassLoaderAdapter();
   }
 
   public IWXStorageAdapter getIWXStorageAdapter(){
@@ -441,6 +470,14 @@ public class WXSDKManager {
       mLifeCycleCallbacks = new ArrayList<>();
     }
     mLifeCycleCallbacks.add(callbacks);
+  }
+
+  public void setAccessibilityRoleAdapter(IWXAccessibilityRoleAdapter adapter) {
+    this.mRoleAdapter = adapter;
+  }
+
+  public IWXAccessibilityRoleAdapter getAccessibilityRoleAdapter() {
+    return mRoleAdapter;
   }
 
   public interface InstanceLifeCycleCallbacks {

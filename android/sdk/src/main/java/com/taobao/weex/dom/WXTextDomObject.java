@@ -18,12 +18,17 @@
  */
 package com.taobao.weex.dom;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Canvas;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Looper;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
+import android.support.v4.content.LocalBroadcastManager;
 import android.text.Editable;
 import android.text.Layout;
 import android.text.Spannable;
@@ -39,17 +44,21 @@ import android.text.style.AlignmentSpan;
 import android.text.style.ForegroundColorSpan;
 
 import com.taobao.weex.WXEnvironment;
+import com.taobao.weex.WXSDKManager;
 import com.taobao.weex.common.Constants;
 import com.taobao.weex.dom.flex.CSSConstants;
 import com.taobao.weex.dom.flex.CSSNode;
 import com.taobao.weex.dom.flex.FloatUtil;
 import com.taobao.weex.dom.flex.MeasureOutput;
+import com.taobao.weex.dom.text.FontBroadcastReceiver;
 import com.taobao.weex.ui.component.WXText;
 import com.taobao.weex.ui.component.WXTextDecoration;
 import com.taobao.weex.utils.StaticLayoutProxy;
+import com.taobao.weex.utils.TypefaceUtil;
 import com.taobao.weex.utils.WXDomUtils;
 import com.taobao.weex.utils.WXLogUtils;
 import com.taobao.weex.utils.WXResourceUtils;
+import com.taobao.weex.utils.WXUtils;
 
 import java.util.Collections;
 import java.util.LinkedList;
@@ -137,8 +146,9 @@ public class WXTextDomObject extends WXDomObject {
   private int mNumberOfLines = UNSET;
   private int mFontSize = UNSET;
   private int mLineHeight = UNSET;
+  private boolean mIncludeFontPadding = false;
   private float previousWidth = Float.NaN;
-  private String mFontFamily = null;
+  private String mFontFamily = WXEnvironment.getGlobalFontFamilyName();
   private String mText = null;
   private TextUtils.TruncateAt textOverflow;
   private Layout.Alignment mAlignment;
@@ -147,6 +157,8 @@ public class WXTextDomObject extends WXDomObject {
   private @Nullable Spanned spanned;
   private @Nullable Layout layout;
   private AtomicReference<Layout> atomicReference = new AtomicReference<>();
+
+  private BroadcastReceiver mTypefaceObserver;
 
   /**
    * Create an instance of current class, and set {@link #TEXT_MEASURE_FUNCTION} as the
@@ -157,6 +169,7 @@ public class WXTextDomObject extends WXDomObject {
     super();
     mTextPaint.setFlags(TextPaint.ANTI_ALIAS_FLAG);
     setMeasureFunction(TEXT_MEASURE_FUNCTION);
+    registerTypefaceObserverIfNeed(WXStyle.getFontFamily(getStyles()));
   }
 
   public TextPaint getTextPaint() {
@@ -269,6 +282,9 @@ public class WXTextDomObject extends WXDomObject {
    */
   private void updateStyleAndText() {
     updateStyleImp(getStyles());
+    if (getAttrs() != null && getAttrs().containsKey(Constants.Name.INCLUDE_FONT_PADDING)) {
+      mIncludeFontPadding = WXUtils.getBoolean(getAttrs().get(Constants.Name.INCLUDE_FONT_PADDING), false);
+    }
     mText = WXAttr.getValue(getAttrs());
   }
 
@@ -307,6 +323,7 @@ public class WXTextDomObject extends WXDomObject {
       if (lineHeight != UNSET) {
         mLineHeight = lineHeight;
       }
+      registerTypefaceObserverIfNeed(mFontFamily);
     }
   }
 
@@ -330,7 +347,7 @@ public class WXTextDomObject extends WXDomObject {
         forceRtl = direction.equals(Constants.Name.RTL);
       }
       layout = StaticLayoutProxy.create(spanned, mTextPaint, (int) Math.ceil(textWidth),
-          Layout.Alignment.ALIGN_NORMAL, 1, 0, false, forceRtl);
+          Layout.Alignment.ALIGN_NORMAL, 1, 0, mIncludeFontPadding, forceRtl);
     } else {
       layout = previousLayout;
     }
@@ -350,7 +367,7 @@ public class WXTextDomObject extends WXDomObject {
         adjustSpansRange(spanned, builder);
         spanned = builder;
         return new StaticLayout(spanned, mTextPaint, (int) Math.ceil(textWidth),
-            Layout.Alignment.ALIGN_NORMAL, 1, 0, false);
+            Layout.Alignment.ALIGN_NORMAL, 1, 0, mIncludeFontPadding);
       }
     }
     return layout;
@@ -394,7 +411,7 @@ public class WXTextDomObject extends WXDomObject {
           startOffset -= 1;
         }
         source.delete(startOffset, startOffset+1);
-        layout = new StaticLayout(source, paint, desired, Layout.Alignment.ALIGN_NORMAL, 1, 0, false);
+        layout = new StaticLayout(source, paint, desired, Layout.Alignment.ALIGN_NORMAL, 1, 0, mIncludeFontPadding);
         if (layout.getLineCount() <= 1) {
           ret = source;
           break;
@@ -543,5 +560,42 @@ public class WXTextDomObject extends WXDomObject {
       result = false;
     }
     return result;
+  }
+
+  @Override
+  public void destroy() {
+    if (WXEnvironment.getApplication() != null && mTypefaceObserver != null) {
+      WXLogUtils.d("WXText", "Unregister the typeface observer");
+      LocalBroadcastManager.getInstance(WXEnvironment.getApplication()).unregisterReceiver(mTypefaceObserver);
+      mTypefaceObserver = null;
+    }
+    super.destroy();
+  }
+
+  @Override
+  protected void finalize() throws Throwable {
+    if(!isDestroy()){
+      destroy();
+    }
+    super.finalize();
+  }
+
+  private void registerTypefaceObserverIfNeed(String desiredFontFamily) {
+    if(TextUtils.isEmpty(desiredFontFamily)){
+      return;
+    }
+    if (WXEnvironment.getApplication() == null) {
+      WXLogUtils.w("WXText", "ApplicationContent is null on register typeface observer");
+      return;
+    }
+    mFontFamily = desiredFontFamily;
+    if (mTypefaceObserver != null) {
+      return;
+    }
+    mTypefaceObserver = new FontBroadcastReceiver(this, mFontFamily);
+    if(WXEnvironment.isApkDebugable()) {
+         WXLogUtils.d("WXText", "Font family register " + desiredFontFamily + " is available" + getRef());
+    }
+    LocalBroadcastManager.getInstance(WXEnvironment.getApplication()).registerReceiver(mTypefaceObserver, new IntentFilter(TypefaceUtil.ACTION_TYPE_FACE_AVAILABLE));
   }
 }
